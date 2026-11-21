@@ -5,7 +5,9 @@ through the channel bridge, and Claude's replies come back as speech.
 """
 
 import asyncio
+import json
 import re
+import urllib.request
 
 from loguru import logger
 
@@ -46,15 +48,50 @@ def last_user_text(context) -> str:
     return " ".join(reversed(parts))
 
 
-def warm_up_whisper() -> None:
-    """Download Whisper if necessary and run one transcription, so that CUDA is ready."""
+def compute_type(device: str) -> str:
+    # int8 is the fastest type on a CPU.
+    return "int8" if device == "cpu" else "default"
+
+
+def warm_up_whisper(device: str = config.WHISPER_DEVICE) -> str:
+    """Download Whisper if necessary and run one transcription, so that CUDA is ready.
+
+    Return the device that works. If the GPU fails, for example because a game uses
+    its memory, Whisper runs on the CPU. That is slower, but the voice mode works.
+    """
     import numpy as np
     from faster_whisper import WhisperModel
 
-    logger.info(f"Loading Whisper ({config.WHISPER_MODEL})...")
-    model = WhisperModel(config.WHISPER_MODEL, device=config.WHISPER_DEVICE)
-    list(model.transcribe(np.zeros(16000, dtype=np.float32), language="en")[0])
-    del model
+    logger.info(f"Loading Whisper ({config.WHISPER_MODEL}, device {device})...")
+    try:
+        model = WhisperModel(config.WHISPER_MODEL, device=device, compute_type=compute_type(device))
+        list(model.transcribe(np.zeros(16000, dtype=np.float32), language="en")[0])
+        del model
+    except RuntimeError as e:
+        if device == "cpu":
+            raise
+        logger.warning(f"Whisper failed on device {device} ({e}). Whisper uses the CPU now.")
+        return warm_up_whisper("cpu")
+    return device
+
+
+def warm_up_ollama() -> None:
+    """Load the local model now. Ollama unloads a model after 5 minutes without use."""
+    logger.info(f"Loading {config.OLLAMA_MODEL} in Ollama...")
+    request = urllib.request.Request(
+        f"{config.OLLAMA_HOST}/api/generate",
+        # A request without a prompt only loads the model.
+        data=json.dumps({"model": config.OLLAMA_MODEL, "keep_alive": "30m"}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as resp:
+            resp.read()
+    except OSError as e:
+        raise RuntimeError(
+            f"Ollama at {config.OLLAMA_HOST} did not load {config.OLLAMA_MODEL} ({e}). "
+            "Start Ollama with `ollama serve`, then run `livemode setup`."
+        ) from e
 
 
 async def run(bridge: Bridge) -> None:
@@ -68,7 +105,7 @@ async def run(bridge: Bridge) -> None:
         await bridge.ready.wait()
         await bridge.send_to_claude(
             f"(livemode system message, not from the user) The voice mode failed to start: {e}. "
-            "Tell the user in the terminal. The log is in "
+            "Tell the user in the terminal, and do not investigate unless they ask. The log is in "
             f"{config.STATE_DIR / 'livemode.log'}."
         )
 
@@ -79,7 +116,8 @@ async def _run(bridge: Bridge) -> None:
     await bridge.ready.wait()
 
     cuda_libs.preload()
-    await asyncio.to_thread(warm_up_whisper)
+    await asyncio.to_thread(warm_up_ollama)
+    whisper_device = await asyncio.to_thread(warm_up_whisper)
 
     from pipecat.adapters.llm.schemas.direct_function import tool_options
     from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -182,7 +220,8 @@ async def _run(bridge: Bridge) -> None:
         LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
     )
     stt = WhisperSTTService(
-        device=config.WHISPER_DEVICE,
+        device=whisper_device,
+        compute_type=compute_type(whisper_device),
         settings=WhisperSTTService.Settings(model=config.WHISPER_MODEL),
     )
     llm = OLLamaLLMService(

@@ -56,12 +56,13 @@ def _prepare_whisper() -> bool:
     from livemode.voice import warm_up_whisper
 
     try:
-        warm_up_whisper()
+        device = warm_up_whisper()
     except Exception as e:
         print(f"Whisper failed: {e}")
-        print("If the GPU is the problem, set WHISPER_DEVICE=cpu.")
         return False
-    print("Whisper is ready.")
+    print(f"Whisper is ready on device {device}.")
+    if device == "cpu" and config.WHISPER_DEVICE != "cpu":
+        print("The GPU failed, so Whisper uses the CPU. The log above gives the reason.")
     return True
 
 

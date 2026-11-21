@@ -1,68 +1,113 @@
 # Livemode
 
-A live voice conversation that runs on local models. A small local model does the small talk. When you ask a real question, it sends the question to Claude, and Claude's answer is spoken to you.
+A local voice mode for Claude Code. You talk, and a small local model talks back. When you give a task or ask a real question, the request goes into your running Claude Code session. Claude does the work in the terminal as usual, and then a voice speaks a short summary of the result.
 
 ```
-browser mic ─WebRTC─▶ Silero VAD + Smart Turn ─▶ Whisper ─▶ Ollama model ─▶ Kokoro ─WebRTC─▶ browser speaker
-                                                                │  ▲
-                                                     ask_claude │  │ Claude's answer, sentence by sentence
-                                                                ▼  │
-                                                          Anthropic API
+microphone ─▶ Silero VAD + Smart Turn ─▶ Whisper ─▶ question? ──yes──────────────┐
+                                                       │ no                       │
+                                                       ▼                          ▼
+                                                 Ollama model ──ask_claude_code──▶ channel event
+                                                       │ small talk                 │
+                                                       ▼                            ▼
+speaker ◀──────────────────────────────────────── Kokoro ◀──── reply tool ◀── Claude Code session
 ```
 
-Everything except the Claude call runs on this machine. The app uses [Pipecat](https://github.com/pipecat-ai/pipecat) for the streaming, the turn detection and the interruptions.
+Speech recognition, the local model and the voice run on your machine. Only Claude Code uses the network.
 
-## Setup
+Livemode is a [Claude Code channel](https://code.claude.com/docs/en/channels): an MCP server that sends events into the session that you started in the terminal. You see everything that Claude does, and you can type at any time.
 
-1. Start Ollama and download the local model:
+> [!WARNING]
+> Channels are a research preview. Custom channels start only with the `--dangerously-load-development-channels` flag, and a Claude Code update can change how they work. Channels need a claude.ai or Console login. They do not work with Bedrock, Vertex or Foundry, or with `claude -p`. Livemode was tested with Claude Code 2.1.319.
+
+## What you need
+
+- Linux. macOS can work, but nobody has tested it. Windows is not supported.
+- [uv](https://docs.astral.sh/uv/)
+- [Ollama](https://ollama.com), running (`ollama serve`)
+- On Linux: PortAudio with its headers, and a C compiler, because PyAudio has no Linux wheel.
+  - Arch: `sudo pacman -S portaudio base-devel`
+  - Debian/Ubuntu: `sudo apt install portaudio19-dev build-essential`
+- A microphone and a speaker or headphones.
+- An NVIDIA GPU is optional. Without one, Whisper runs on the CPU and is slower.
+
+## Install
+
+1. Install the `livemode` command:
    ```bash
-   ollama serve            # or: sudo systemctl start ollama
-   ollama pull qwen3:4b-instruct
+   uv tool install git+https://github.com/Sossenbinder/livemode
    ```
-2. Copy `.env.example` to `.env`. Then set `ANTHROPIC_API_KEY`.
-3. Start the app:
+2. Download the models and check your setup. This pulls the Ollama model (about 2.5 GB), Whisper (about 800 MB) and Kokoro (about 340 MB):
    ```bash
-   uv run bot.py -t webrtc
+   livemode setup
    ```
-4. Open http://localhost:7860 and click **Connect**.
+3. Install the plugin in Claude Code:
+   ```
+   /plugin marketplace add Sossenbinder/livemode
+   /plugin install livemode@livemode
+   ```
 
-The first start downloads the Whisper model (about 800 MB) and the Kokoro model (about 340 MB).
+Do step 2 before the first start. Claude Code gives an MCP server 30 seconds to connect, and the downloads take longer.
 
-Use headphones or the browser tab. The browser cancels the echo, so you can interrupt the bot while it talks.
+## Use
 
-## How the routing works
-
-The local model (`qwen3:4b-instruct`) gets one tool, `ask_claude`. Its prompt in `bot.py` (`LOCAL_PROMPT`) tells it to:
-
-- Send every question or request to Claude.
-- Answer only questions about itself, such as "How are you?".
-- Do greetings, reactions and other small talk itself.
-
-When the tool starts, the bot says "Let me check." Then `claude_advisor.py` streams Claude's answer, and each sentence goes to the voice as soon as it is complete. Claude also gets the last ten turns of the conversation, so follow-up questions work.
-
-A 4B model sometimes routes wrong. To check a change to the prompt or the model, run:
+Start Claude Code with the channel:
 
 ```bash
-uv run scripts/route_test.py
+claude --dangerously-load-development-channels plugin:livemode@livemode
 ```
+
+Confirm the warning about development channels. After a few seconds, the voice says "Voice mode is on." Then talk:
+
+- **Small talk** ("Hey, how's it going?") stays with the local model and gets a fast answer.
+- **Questions** ("Why is the build so slow?") and **tasks** ("Run the tests and tell me what fails.") go to Claude. The bot says "On it." Claude works in the terminal and then speaks a summary.
+- **Permission prompts**: when Claude needs your approval, the voice asks "Claude asks for permission: … Should I allow it?" Say "yes" or "no". The terminal dialog stays open too, and the first answer wins.
+
+With speakers, the microphone is off while the bot talks, so the bot does not hear itself. Then you cannot interrupt it. With headphones, start Claude Code with `LIVEMODE_HEADPHONES=1` in front of the command, so you can interrupt the bot.
+
+To stop the voice mode, exit Claude Code. To use Claude Code without voice, start it without the flag.
 
 ## Configuration
 
-Set these in `.env`:
+Set these environment variables in the shell before you start Claude Code. Claude Code gives its environment to the livemode server.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | (none) | Required for real questions. |
-| `CLAUDE_MODEL` | `claude-opus-5-5` | `claude-sonnet-5-5` or `claude-haiku-5-5` start to speak sooner. |
-| `CLAUDE_EFFORT` | `low` | Higher effort gives better answers, but you wait longer. |
-| `OLLAMA_MODEL` | `qwen3:4b-instruct` | `qwen3:8b` routes more reliably, but uses about 5 GB of VRAM. |
-| `OLLAMA_URL` | `http://localhost:11434/v1` | |
+| `LIVEMODE_HEADPHONES` | off | `1` keeps the microphone on while the bot talks, so you can interrupt it. |
+| `LIVEMODE_NO_VOICE_PERMISSIONS` | off | `1` turns off spoken permission prompts. You answer them in the terminal. |
+| `OLLAMA_MODEL` | `qwen3:4b-instruct` | Run `livemode setup` again after a change. |
+| `OLLAMA_HOST` | `http://localhost:11434` | The same variable that the `ollama` CLI reads. |
 | `WHISPER_MODEL` | `Systran/faster-distil-whisper-medium.en` | English only. |
-| `WHISPER_DEVICE` | `auto` | Set to `cpu` if the GPU has no free memory. |
+| `WHISPER_DEVICE` | `auto` | If the GPU fails, for example because it has no free memory, Whisper uses the CPU. |
 | `KOKORO_VOICE` | `af_heart` | Other voices: `am_michael`, `bf_emma`, `bm_george`, and more. |
 
-## Notes
+The log is in `~/.local/state/livemode/livemode.log`.
 
-- The app supports English only. Kokoro has no German voice.
-- The system has CUDA 13, but faster-whisper needs the CUDA 12 cuBLAS and cuDNN libraries. The `nvidia-*-cu12` packages supply them, and `cuda_libs.py` loads them at startup.
-- Kokoro runs on the CPU. It needs about 0.5 s before each sentence starts to play. This is now the largest delay in a local turn.
+## How it works
+
+- **Routing:** Whisper ends questions with a question mark. A fixed rule sends each question to Claude, except small talk questions about the bot, such as "How are you?". For all other turns, the local model decides. It does the small talk itself, or it calls the `ask_claude_code` tool. The tool sends your words to Claude without changes. See `src/livemode/routing.py` and `LOCAL_PROMPT` in `src/livemode/prompts.py`.
+- **Answers:** The channel tells Claude to answer each voice message with the `reply` tool, in two or three sentences written for the ear. Kokoro speaks the text. The channel approves its own `reply` tool, so you do not hear a permission question before each answer.
+- **Permissions:** A fixed yes/no word list reads your answer. The local model does not, because a wrong "yes" is a security risk. If the answer is not clear twice, the question goes back to the terminal.
+- **Protocol:** The server uses the MCP handshake protocol. The 2026-07-28 revision has no path for notifications that the server sends on its own, so Claude Code skips channels on it.
+
+## Limits
+
+- English only. Kokoro has no German voice in this setup, and the Whisper model is English only.
+- A person or a sound near the microphone can approve a permission prompt. Set `LIVEMODE_NO_VOICE_PERMISSIONS=1` if that is a risk for you.
+- The 4B model can still send a small talk sentence to Claude, or answer a command itself. Check a change to the prompt with `uv run scripts/route_test.py`.
+- Whisper and the Ollama model need about 4 GB of GPU memory together. If a game uses the GPU, Ollama moves part of the model to the CPU, and Whisper can fall back to the CPU.
+
+## Development
+
+```bash
+git clone https://github.com/Sossenbinder/livemode && cd livemode
+uv sync
+uv run scripts/route_test.py      # routing test, needs Ollama
+```
+
+To test the local code without the plugin, put a server named `livemode` into the `.mcp.json` of a test project, with the command `uv` and the arguments `run --directory /path/to/livemode livemode serve`. Then start `claude --dangerously-load-development-channels server:livemode` there.
+
+To load the plugin from the folder for one session, use `claude --plugin-dir plugins/livemode --dangerously-load-development-channels plugin:livemode@inline`.
+
+## License
+
+MIT

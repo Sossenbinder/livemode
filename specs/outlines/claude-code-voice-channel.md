@@ -100,3 +100,14 @@ The first plugin start must not do these downloads, because the MCP start has a 
 - Can the Python `mcp` SDK send and receive custom notification methods, or does it need a raw-message workaround? _The docs have only a TypeScript example. A short test during implementation answers this._
 - Does `--dangerously-load-development-channels` accept `plugin:livemode@livemode`, or only `server:`? _The docs show only `server:` with this flag. A start test with Claude Code 2.1.319 answers this._
 - How long is the MCP start limit, and does the cached `uvx` start fit in it? _This needs a measurement on the user's machine._
+
+## Implementation notes
+
+The implementation changed these points of the plan:
+
+- **Open questions answered:** The Python `mcp` SDK 2.3 can send and receive custom notifications. Claude Code skips channels on the 2026-07-28 protocol revision, so the server serves only the handshake era through the private `_serve_legacy_stream` (`mcp` is pinned to `<2.4`). `--dangerously-load-development-channels` accepts `plugin:<name>@<marketplace>`. A plugin from `--plugin-dir` has the marketplace name `inline`. The MCP start limit is 30 seconds. A start of the installed command takes less than one second.
+- **Distribution:** `uv tool install` and a plugin command `livemode serve`, not `uvx`. The start does not need the network, and it is faster.
+- **Question rule:** A fixed rule sends questions (text that ends with "?") to Claude Code before the local model. The 4B model answered general questions itself, also at temperature 0. With the rule and temperature 0, `scripts/route_test.py` gives 14 of 14.
+- **Tool input:** `ask_claude_code` takes no arguments. It sends the user's words since the last bot turn, because Whisper can split one sentence into two messages, and a 4B rewrite loses detail.
+- **Automatic approval:** Claude Code asks for permission before each `reply` call. The channel approves its own `reply` tool.
+- **Robustness:** Whisper falls back to the CPU if CUDA fails. The bot loads the Ollama model at start. If the voice does not start, the channel tells Claude, and Claude tells the user in the terminal.
