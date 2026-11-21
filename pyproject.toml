@@ -1,0 +1,16 @@
+[project]
+name = "livemode"
+version = "0.1.0"
+description = "Live voice conversation with local models that hands real questions to Claude"
+readme = "README.md"
+authors = [
+    { name = "Sossenbinder", email = "Stefan.Daniel.Schranz96@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=2.12.0",
+    "nvidia-cublas-cu12>=12.9.3.13",
+    "nvidia-cudnn-cu12>=9,<10",
+    "pipecat-ai[kokoro,ollama,runner,silero,webrtc,whisper]>=1.16.0",
+    "python-dotenv>=1.2.4",
+]
