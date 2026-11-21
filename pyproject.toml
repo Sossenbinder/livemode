@@ -1,6 +1,6 @@
 [project]
 name = "livemode"
-version = "0.3.0"
+version = "0.3.1"
 description = "A local voice mode for Claude Code: talk to a small local model that hands real work to Claude Code"
 readme = "README.md"
 license = "MIT"

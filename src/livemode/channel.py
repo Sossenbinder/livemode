@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 
 from livemode import config
 from livemode.prompts import CHANNEL_INSTRUCTIONS
-from livemode.session import channel_requested
+from livemode.session import channel_requested, expected_channel, misnamed_channel
 
 EXPERIMENTAL = {"claude/channel": {}, "claude/channel/permission": {}}
 REPLY_TOOL = "reply"
@@ -207,7 +207,10 @@ def _tool_error(text: str) -> types.CallToolResult:
     return types.CallToolResult(content=[types.TextContent(type="text", text=text)], is_error=True)
 
 
-async def serve(voice: Callable[[Bridge], Awaitable[None]]) -> None:
+async def serve(
+    voice: Callable[[Bridge], Awaitable[None]],
+    warn: Callable[[str], Awaitable[None]],
+) -> None:
     """Serve the channel on stdio and run the voice next to it until Claude Code exits.
 
     If the session did not ask for this channel, serve an empty server and do not
@@ -225,9 +228,21 @@ async def serve(voice: Callable[[Bridge], Awaitable[None]]) -> None:
     active = requested is not False
     if not active:
         logger.info(
-            "This session did not start with the livemode channel. The voice stays off. Start "
-            "Claude Code with --dangerously-load-development-channels plugin:livemode@livemode."
+            "This session did not start with the livemode channel, so the voice stays off. "
+            f"Claude Code needs exactly this argument: --dangerously-load-development-channels "
+            f"{expected_channel()}"
         )
+
+        wrong = misnamed_channel()
+        if wrong:
+            # The user wanted the voice, so silence would look like a failure without a reason.
+            logger.warning(f"The channel argument {wrong!r} is not {expected_channel()!r}.")
+            asyncio.get_running_loop().create_task(
+                warn(
+                    "The livemode channel name in the start command is wrong, so Claude cannot "
+                    "hear me. Restart Claude Code with plugin, colon, livemode, at, livemode."
+                )
+            )
 
     bridge = Bridge()
     server = build_server(bridge, active)

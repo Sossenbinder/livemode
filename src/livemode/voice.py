@@ -175,6 +175,36 @@ def _unload_ollama() -> None:
         logger.warning(f"Ollama did not unload the model: {e}")
 
 
+def _say(text: str) -> None:
+    """Speak one sentence through the speaker, without the pipeline and the microphone."""
+    import numpy as np
+    import pyaudio
+    from kokoro_onnx import Kokoro
+    from pipecat.services.kokoro import tts
+
+    kokoro = Kokoro(
+        str(tts.KOKORO_CACHE_DIR / "kokoro-v1.0.onnx"),
+        str(tts.KOKORO_CACHE_DIR / "voices-v1.0.bin"),
+    )
+    samples, rate = kokoro.create(text, voice=config.KOKORO_VOICE, lang="en-us")
+    audio = pyaudio.PyAudio()
+    stream = audio.open(format=pyaudio.paInt16, channels=1, rate=rate, output=True)
+    try:
+        stream.write((np.clip(samples, -1, 1) * 32767).astype(np.int16).tobytes())
+    finally:
+        stream.stop_stream()
+        stream.close()
+        audio.terminate()
+
+
+async def warn(text: str) -> None:
+    """Speak a warning when the voice cannot start. Errors go to the log only."""
+    try:
+        await asyncio.to_thread(_say, text)
+    except Exception:
+        logger.exception("The spoken warning failed")
+
+
 async def run(bridge: Bridge) -> None:
     """Turn the voice on when Claude Code is connected, then wait until the server ends."""
     # Model loading blocks for a few seconds, and the MCP handshake must not wait for it.

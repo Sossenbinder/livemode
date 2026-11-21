@@ -56,6 +56,15 @@ Start Claude Code with the channel:
 claude --dangerously-load-development-channels plugin:livemode@livemode
 ```
 
+Type the channel name exactly: `plugin:livemode@livemode`, with no period or other character after it. Claude Code ignores a channel with a wrong name and does not tell the server. Livemode then reads the start command, keeps the microphone off, and speaks a warning.
+
+Save the command as a shell function, so that you do not type it each time. In fish:
+
+```fish
+function claude-voice; claude --dangerously-load-development-channels plugin:livemode@livemode $argv; end
+funcsave claude-voice
+```
+
 Confirm the warning about development channels. After a few seconds, the voice says "Voice mode is on." Then talk:
 
 - **Small talk** ("Hey, how's it going?") stays with the local model and gets a fast answer.

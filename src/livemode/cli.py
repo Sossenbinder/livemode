@@ -43,6 +43,6 @@ def main() -> None:
     from livemode import channel, voice
 
     try:
-        asyncio.run(channel.serve(voice.run))
+        asyncio.run(channel.serve(voice.run, voice.warn))
     except KeyboardInterrupt:
         pass

@@ -13,9 +13,35 @@ import os
 import re
 import subprocess
 
+from livemode import config
+
 _CHANNEL_FLAG = re.compile(r"--(dangerously-load-development-)?channels\b")
-_THIS_CHANNEL = re.compile(r"(plugin:livemode@\S+|server:livemode)(?=[\s,]|$)")
 _MAX_ANCESTORS = 10
+
+
+def expected_channel() -> str:
+    """Return the channel name that Claude Code accepts for this server, exactly.
+
+    A plugin server gets CLAUDE_PLUGIN_DATA=.../<plugin>-<marketplace>. Claude Code
+    registers the channel only if the flag names plugin:<plugin>@<marketplace>
+    exactly: "plugin:livemode@livemode." with a period is skipped. A server from a
+    .mcp.json file has no plugin data and is named server:<name>.
+    """
+    data = os.getenv("CLAUDE_PLUGIN_DATA", "")
+    prefix = f"{config.SERVER_NAME}-"
+    name = os.path.basename(data.rstrip("/"))
+    if name.startswith(prefix):
+        return f"plugin:{config.SERVER_NAME}@{name[len(prefix) :]}"
+    return f"server:{config.SERVER_NAME}"
+
+
+def _names_channel(args: str, channel: str) -> bool:
+    # The flag takes the names as separate arguments, comma lists or --flag=name.
+    for token in args.split():
+        for part in token.split("=")[-1].split(","):
+            if part == channel:
+                return True
+    return False
 
 
 def _parent_and_args(pid: int) -> tuple[int, str] | None:
@@ -34,8 +60,8 @@ def _parent_and_args(pid: int) -> tuple[int, str] | None:
     return int(parts[0]), parts[1]
 
 
-def channel_requested() -> bool | None:
-    """Return True or False, or None if the claude process was not found."""
+def _claude_args() -> str | None:
+    """Return the command line of the claude process above this one, or None."""
     pid = os.getppid()
     for _ in range(_MAX_ANCESTORS):
         if pid <= 1:
@@ -44,10 +70,29 @@ def channel_requested() -> bool | None:
         if found is None:
             return None
         parent, args = found
-        if _CHANNEL_FLAG.search(args):
-            return bool(_THIS_CHANNEL.search(args))
         # The native binary is "claude". An npm install runs "node .../claude-code/cli.js".
-        if any("claude" in arg.lower() for arg in args.split()[:2]):
-            return False
+        if _CHANNEL_FLAG.search(args) or any("claude" in a.lower() for a in args.split()[:2]):
+            return args
         pid = parent
+    return None
+
+
+def channel_requested() -> bool | None:
+    """Return True or False, or None if the claude process was not found."""
+    args = _claude_args()
+    if args is None:
+        return None
+    return bool(_CHANNEL_FLAG.search(args)) and _names_channel(args, expected_channel())
+
+
+def misnamed_channel() -> str | None:
+    """Return a channel argument that names livemode but not exactly, such as a typo."""
+    args = _claude_args()
+    if args is None or not _CHANNEL_FLAG.search(args):
+        return None
+    for token in args.split():
+        for part in token.split("=")[-1].split(","):
+            is_channel = part.startswith(("plugin:", "server:"))
+            if is_channel and config.SERVER_NAME in part and part != expected_channel():
+                return part
     return None
