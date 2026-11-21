@@ -1,0 +1,22 @@
+{
+  "name": "livemode",
+  "description": "Talk to Claude Code. A small local model does the small talk and sends real work into your session. Claude's answers are spoken back. Speech recognition, the local model and the voice run on your machine.",
+  "version": "0.2.0",
+  "author": {
+    "name": "Sossenbinder"
+  },
+  "homepage": "https://github.com/Sossenbinder/livemode",
+  "license": "MIT",
+  "keywords": ["voice", "speech", "channel", "whisper", "kokoro", "ollama"],
+  "mcpServers": {
+    "livemode": {
+      "command": "livemode",
+      "args": ["serve"]
+    }
+  },
+  "channels": [
+    {
+      "server": "livemode"
+    }
+  ]
+}

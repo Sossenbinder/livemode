@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "livemode",
+  "description": "A local voice mode for Claude Code",
+  "owner": {
+    "name": "Sossenbinder",
+    "url": "https://github.com/Sossenbinder"
+  },
+  "plugins": [
+    {
+      "name": "livemode",
+      "description": "Talk to Claude Code. A small local model does the small talk and sends real work into your session. Claude's answers are spoken back. Speech recognition, the local model and the voice run on your machine.",
+      "version": "0.2.0",
+      "author": {
+        "name": "Sossenbinder"
+      },
+      "source": "./plugins/livemode",
+      "category": "productivity",
+      "homepage": "https://github.com/Sossenbinder/livemode"
+    }
+  ]
+}

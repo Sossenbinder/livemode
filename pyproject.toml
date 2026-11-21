@@ -1,16 +1,32 @@
 [project]
 name = "livemode"
-version = "0.1.0"
-description = "Live voice conversation with local models that hands real questions to Claude"
+version = "0.2.0"
+description = "A local voice mode for Claude Code: talk to a small local model that hands real work to Claude Code"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Sossenbinder", email = "Stefan.Daniel.Schranz96@gmail.com" }
 ]
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
-    "anthropic>=2.12.0",
-    "nvidia-cublas-cu12>=12.9.3.13",
-    "nvidia-cudnn-cu12>=9,<10",
-    "pipecat-ai[kokoro,ollama,runner,silero,webrtc,whisper]>=1.16.0",
-    "python-dotenv>=1.2.4",
+    # channel.py uses the private handshake loop of the MCP SDK. Test before you raise this pin.
+    "mcp>=2.3.0,<2.4",
+    "pipecat-ai[kokoro,local,ollama,silero,whisper]>=1.16.0,<1.17",
+    # faster-whisper needs the CUDA 12 libraries. These wheels supply them on Linux.
+    "nvidia-cublas-cu12>=12.9.3.13; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "nvidia-cudnn-cu12>=9,<10; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
+
+[project.urls]
+Repository = "https://github.com/Sossenbinder/livemode"
+
+[project.scripts]
+livemode = "livemode.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
