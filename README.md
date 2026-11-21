@@ -62,9 +62,21 @@ Confirm the warning about development channels. After a few seconds, the voice s
 - **Questions** ("Why is the build so slow?") and **tasks** ("Run the tests and tell me what fails.") go to Claude. The bot says "On it." Claude works in the terminal and then speaks a summary.
 - **Permission prompts**: when Claude needs your approval, the voice asks "Claude asks for permission: … Should I allow it?" Say "yes" or "no". The terminal dialog stays open too, and the first answer wins.
 
+Each request that goes to Claude shows in the conversation as a `← livemode: …` row with your words. Claude's spoken answer is the `reply` tool call under it. Small talk with the local model does not show in the conversation.
+
 With speakers, the microphone is off while the bot talks, so the bot does not hear itself. Then you cannot interrupt it. With headphones, start Claude Code with `LIVEMODE_HEADPHONES=1` in front of the command, so you can interrupt the bot.
 
-To stop the voice mode, exit Claude Code. To use Claude Code without voice, start it without the flag.
+### Turn the voice off and on
+
+| To | Do |
+|---|---|
+| Turn the voice off | Type `/livemode:voice off`, or say "voice off" |
+| Turn the voice on again | Type `/livemode:voice on` |
+| Toggle it | Type `/livemode:voice` |
+
+When the voice is off, the microphone is free, Ollama unloads the model, and Whisper frees most of its GPU memory. Claude then answers in the terminal only.
+
+The voice runs only in a session that you start with the channel flag. In other sessions, the plugin does not open the microphone and gives Claude no tools.
 
 ## Configuration
 

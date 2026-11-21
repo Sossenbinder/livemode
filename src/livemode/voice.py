@@ -5,6 +5,7 @@ through the channel bridge, and Claude's replies come back as speech.
 """
 
 import asyncio
+import gc
 import json
 import re
 import urllib.request
@@ -17,6 +18,12 @@ from livemode.prompts import LOCAL_PROMPT
 from livemode.routing import is_question_for_claude
 
 GREETING = "Voice mode is on."
+FAREWELL = "Voice mode is off."
+
+# Spoken commands that turn the voice off. The voice cannot hear "on" while it is off.
+_VOICE_OFF = re.compile(
+    r"\b(voice( mode)? off|turn (the |off )?voice( mode)?( off)?|stop listening|go to sleep)\b"
+)
 
 # Emoji, pictographs and dingbats. Small local models add them even when told not to.
 _EMOJI = re.compile("[\U0001f000-\U0001faff☀-➿️‍]+")
@@ -75,13 +82,20 @@ def warm_up_whisper(device: str = config.WHISPER_DEVICE) -> str:
     return device
 
 
-def warm_up_ollama() -> None:
-    """Load the local model now. Ollama unloads a model after 5 minutes without use."""
-    logger.info(f"Loading {config.OLLAMA_MODEL} in Ollama...")
+def is_voice_off_command(text: str) -> bool:
+    return bool(_VOICE_OFF.search(text.lower().replace(",", "")))
+
+
+def warm_up_ollama(keep_alive: str = "30m") -> None:
+    """Load the local model now. Ollama unloads a model after 5 minutes without use.
+
+    keep_alive "0" unloads the model instead, which frees its memory.
+    """
+    logger.info(f"Ollama {config.OLLAMA_MODEL}: keep_alive {keep_alive}")
     request = urllib.request.Request(
         f"{config.OLLAMA_HOST}/api/generate",
-        # A request without a prompt only loads the model.
-        data=json.dumps({"model": config.OLLAMA_MODEL, "keep_alive": "30m"}).encode(),
+        # A request without a prompt only loads or unloads the model.
+        data=json.dumps({"model": config.OLLAMA_MODEL, "keep_alive": keep_alive}).encode(),
         headers={"Content-Type": "application/json"},
     )
     try:
@@ -94,27 +108,87 @@ def warm_up_ollama() -> None:
         ) from e
 
 
-async def run(bridge: Bridge) -> None:
-    """Run the voice pipeline until it is cancelled. Errors go to the log and to Claude."""
+class VoiceController:
+    """Starts and stops the voice pipeline. Off releases the microphone and the models."""
+
+    def __init__(self, bridge: Bridge):
+        self._bridge = bridge
+        self._task: asyncio.Task | None = None
+        self._lock = asyncio.Lock()
+        self._pending: set[asyncio.Task] = set()
+        bridge.set_voice = self.set
+
+    @property
+    def is_on(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    async def set(self, state: str) -> str:
+        async with self._lock:
+            want_on = not self.is_on if state == "toggle" else state == "on"
+            if want_on and not self.is_on:
+                self._task = asyncio.create_task(self._run())
+            elif not want_on and self.is_on:
+                await self._stop()
+            return "on" if want_on else "off"
+
+    def schedule(self, coro) -> None:
+        # Keep a reference, so that the task is not garbage collected while it runs.
+        task = asyncio.create_task(coro)
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
+
+    async def turn_off_after_farewell(self) -> None:
+        # Let the farewell play before the speaker closes.
+        await asyncio.sleep(2)
+        await self.set("off")
+
+    async def _stop(self) -> None:
+        task, self._task = self._task, None
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        # The pipeline objects hold Whisper. Collect them now, so that the GPU memory is free.
+        gc.collect()
+        await asyncio.to_thread(_unload_ollama)
+        logger.info("Voice mode is off.")
+
+    async def _run(self) -> None:
+        try:
+            await _run_pipeline(self._bridge, self)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.exception("The voice pipeline failed")
+            await self._bridge.send_to_claude(
+                f"(livemode system message, not from the user) The voice mode failed: {e}. Tell "
+                "the user in the terminal, and do not investigate unless they ask. The log is "
+                f"in {config.STATE_DIR / 'livemode.log'}."
+            )
+
+
+def _unload_ollama() -> None:
     try:
-        await _run(bridge)
-    except asyncio.CancelledError:
-        raise
-    except Exception as e:
-        logger.exception("The voice pipeline failed")
-        await bridge.ready.wait()
-        await bridge.send_to_claude(
-            f"(livemode system message, not from the user) The voice mode failed to start: {e}. "
-            "Tell the user in the terminal, and do not investigate unless they ask. The log is in "
-            f"{config.STATE_DIR / 'livemode.log'}."
-        )
+        warm_up_ollama(keep_alive="0")
+    except RuntimeError as e:
+        logger.warning(f"Ollama did not unload the model: {e}")
 
 
-async def _run(bridge: Bridge) -> None:
-    # Wait until Claude Code is connected. Model loading blocks for a few seconds,
-    # and the MCP handshake must not wait for it.
+async def run(bridge: Bridge) -> None:
+    """Turn the voice on when Claude Code is connected, then wait until the server ends."""
+    # Model loading blocks for a few seconds, and the MCP handshake must not wait for it.
     await bridge.ready.wait()
+    controller = VoiceController(bridge)
+    await controller.set("on")
+    try:
+        await asyncio.Event().wait()
+    finally:
+        if controller.is_on:
+            await controller.set("off")
 
+
+async def _run_pipeline(bridge: Bridge, controller: VoiceController) -> None:
     cuda_libs.preload()
     await asyncio.to_thread(warm_up_ollama)
     whisper_device = await asyncio.to_thread(warm_up_whisper)
@@ -172,6 +246,11 @@ async def _run(bridge: Bridge) -> None:
             await super().process_frame(frame, direction)
             if isinstance(frame, LLMContextFrame):
                 text = last_user_text(frame.context)
+                if is_voice_off_command(text):
+                    logger.info(f"Voice off by voice command: {text}")
+                    await self.push_frame(TTSSpeakFrame(FAREWELL, append_to_context=False))
+                    controller.schedule(controller.turn_off_after_farewell())
+                    return
                 if bridge.permissions:
                     await self._answer(text)
                     return
@@ -291,3 +370,5 @@ async def _run(bridge: Bridge) -> None:
     finally:
         bridge.speak = None
         bridge.on_permission = None
+        bridge.permissions.clear()
+        await asyncio.shield(runner.cancel())

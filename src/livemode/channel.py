@@ -19,9 +19,11 @@ from pydantic import BaseModel, ConfigDict
 
 from livemode import config
 from livemode.prompts import CHANNEL_INSTRUCTIONS
+from livemode.session import channel_requested
 
 EXPERIMENTAL = {"claude/channel": {}, "claude/channel/permission": {}}
 REPLY_TOOL = "reply"
+VOICE_TOOL = "voice"
 
 
 class _Params(BaseModel):
@@ -50,6 +52,8 @@ class Bridge:
         self.ready = asyncio.Event()
         self.speak: Callable[[str], Awaitable[None]] | None = None
         self.on_permission: Callable[[], Awaitable[None]] | None = None
+        # Turns the voice on or off. Takes "on", "off" or "toggle" and returns the new state.
+        self.set_voice: Callable[[str], Awaitable[str]] | None = None
         self.permissions: deque[PermissionRequest] = deque()
 
     def attach(self, session) -> None:
@@ -82,11 +86,29 @@ def _is_own_reply_tool(tool_name: str) -> bool:
     return tool_name.endswith(f"{config.SERVER_NAME}__{REPLY_TOOL}")
 
 
-def build_server(bridge: Bridge) -> Server:
+def build_server(bridge: Bridge, active: bool) -> Server:
+    """Build the MCP server. An inactive server has no tools and no instructions."""
+
     async def list_tools(ctx, params):
         bridge.attach(ctx.session)
+        if not active:
+            return types.ListToolsResult(tools=[])
         return types.ListToolsResult(
             tools=[
+                types.Tool(
+                    name=VOICE_TOOL,
+                    description=(
+                        "Turn the livemode voice on or off. Off releases the microphone and "
+                        "frees the models. Use it only when the user asks."
+                    ),
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "state": {"type": "string", "enum": ["on", "off", "toggle"]}
+                        },
+                        "required": ["state"],
+                    },
+                ),
                 types.Tool(
                     name=REPLY_TOOL,
                     description=(
@@ -103,19 +125,27 @@ def build_server(bridge: Bridge) -> Server:
                         },
                         "required": ["text"],
                     },
-                )
+                ),
             ]
         )
 
     async def call_tool(ctx, params):
         bridge.attach(ctx.session)
+        arguments = params.arguments or {}
+        if params.name == VOICE_TOOL and bridge.set_voice is not None:
+            state = await bridge.set_voice(str(arguments.get("state", "toggle")))
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=f"The voice is {state}.")]
+            )
         if params.name != REPLY_TOOL:
             return _tool_error(f"Unknown tool: {params.name}")
-        text = str((params.arguments or {}).get("text", "")).strip()
+        text = str(arguments.get("text", "")).strip()
         if not text:
             return _tool_error("The text is empty.")
         if bridge.speak is None:
-            return _tool_error("The voice is not running. Answer in the terminal instead.")
+            return _tool_error(
+                "The voice is off, so nothing was spoken. Answer in the terminal instead."
+            )
         logger.info(f"Claude replied: {text}")
         await bridge.speak(text)
         return types.CallToolResult(content=[types.TextContent(type="text", text="Spoken.")])
@@ -138,14 +168,14 @@ def build_server(bridge: Bridge) -> Server:
             # would make the voice mode unusable.
             await bridge.answer_permission(request, allow=True)
             return
-        if not config.VOICE_PERMISSIONS or bridge.on_permission is None:
+        if not active or not config.VOICE_PERMISSIONS or bridge.on_permission is None:
             return  # The terminal dialog stays open for the user.
         bridge.permissions.append(request)
         await bridge.on_permission()
 
     server = _ChannelServer(
         config.SERVER_NAME,
-        instructions=CHANNEL_INSTRUCTIONS,
+        instructions=CHANNEL_INSTRUCTIONS if active else None,
         on_list_tools=list_tools,
         on_call_tool=call_tool,
     )
@@ -178,17 +208,32 @@ def _tool_error(text: str) -> types.CallToolResult:
 
 
 async def serve(voice: Callable[[Bridge], Awaitable[None]]) -> None:
-    """Serve the channel on stdio and run the voice next to it until Claude Code exits."""
+    """Serve the channel on stdio and run the voice next to it until Claude Code exits.
+
+    If the session did not ask for this channel, serve an empty server and do not
+    start the voice.
+    """
     # Channel events are notifications that the server sends without a request. The
     # 2026-07-28 protocol revision has no path for them, so Claude Code skips the
     # channel on a modern connection. Serve only the handshake era. The MCP SDK has
     # no public option for this, so the private loop is used (mcp is pinned).
     from mcp.server.runner import _serve_legacy_stream
 
+    requested = channel_requested()
+    if requested is None:
+        logger.warning("The claude process was not found. The voice starts anyway.")
+    active = requested is not False
+    if not active:
+        logger.info(
+            "This session did not start with the livemode channel. The voice stays off. Start "
+            "Claude Code with --dangerously-load-development-channels plugin:livemode@livemode."
+        )
+
     bridge = Bridge()
-    server = build_server(bridge)
+    server = build_server(bridge, active)
     async with stdio_server() as (read_stream, write_stream), anyio.create_task_group() as tg:
-        tg.start_soon(voice, bridge)
+        if active:
+            tg.start_soon(voice, bridge)
         async with server.lifespan(server) as state:
             await _serve_legacy_stream(
                 server,
